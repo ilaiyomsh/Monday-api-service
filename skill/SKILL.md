@@ -689,6 +689,8 @@ All errors return HTTP 200 with an `errors` array:
 | `maxConcurrencyExceeded` | Too many concurrent requests | ✅ backoff |
 | `InternalServerError` | Monday server error | ✅ retry |
 | `DAILY_LIMIT_EXCEEDED` | Daily request limit reached | ❌ wait until next day |
+| `GRAPHQL_VALIDATION_FAILED` | Query doesn't match schema (e.g. wrong field name) | ❌ fix query |
+| `REQUEST_MAX_COMPLEXITY_EXCEEDED` | Single request exceeds max complexity (since 2025-10) | ✅ simplify & retry |
 
 ### Partial Data
 

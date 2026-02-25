@@ -56,6 +56,8 @@ export const ERROR_CODES = {
   FIELD_LIMIT_EXCEEDED:       'FIELD_LIMIT_EXCEEDED',
   COMPLEXITY_EXCEPTION:       'ComplexityException',
   INVALID_ITEM_ID:            'InvalidItemIdException',
+  GRAPHQL_VALIDATION_FAILED:  'GRAPHQL_VALIDATION_FAILED',
+  REQUEST_MAX_COMPLEXITY_EXCEEDED: 'REQUEST_MAX_COMPLEXITY_EXCEEDED',
 };
 
 const RETRYABLE = new Set([
@@ -63,7 +65,7 @@ const RETRYABLE = new Set([
   ERROR_CODES.MAX_CONCURRENCY_EXCEEDED, ERROR_CODES.IP_RATE_LIMIT_EXCEEDED,
   ERROR_CODES.INTERNAL_SERVER_ERROR, ERROR_CODES.API_TEMPORARILY_BLOCKED,
   ERROR_CODES.RESOURCE_LOCKED, ERROR_CODES.FIELD_LIMIT_EXCEEDED,
-  ERROR_CODES.COMPLEXITY_EXCEPTION,
+  ERROR_CODES.COMPLEXITY_EXCEPTION, ERROR_CODES.REQUEST_MAX_COMPLEXITY_EXCEEDED,
 ]);
 
 const AUTH_ERRORS = new Set([
@@ -80,7 +82,7 @@ const VALIDATION_ERRORS = new Set([
   ERROR_CODES.RESOURCE_NOT_FOUND, ERROR_CODES.CREATE_BOARD_EXCEPTION,
   ERROR_CODES.DELETE_LAST_GROUP, ERROR_CODES.RECORD_INVALID,
   ERROR_CODES.BAD_REQUEST, ERROR_CODES.JSON_PARSE_EXCEPTION,
-  ERROR_CODES.INVALID_ITEM_ID,
+  ERROR_CODES.INVALID_ITEM_ID, ERROR_CODES.GRAPHQL_VALIDATION_FAILED,
 ]);
 
 // ── User Messages ───────────────────────────────────────────────────────────
@@ -119,6 +121,8 @@ export const MSG_HE = {
   [ERROR_CODES.FIELD_LIMIT_EXCEEDED]:        'חריגה ממגבלת בקשות מקבילות. אנא המתן ונסה שוב.',
   [ERROR_CODES.COMPLEXITY_EXCEPTION]:        'הבקשה מורכבת מדי. נסה לצמצם את כמות השדות.',
   [ERROR_CODES.INVALID_ITEM_ID]:             'מזהה הפריט לא תקין או שהפריט נמחק.',
+  [ERROR_CODES.GRAPHQL_VALIDATION_FAILED]:   'שגיאת תחביר בבקשת GraphQL. בדוק את שמות השדות.',
+  [ERROR_CODES.REQUEST_MAX_COMPLEXITY_EXCEEDED]: 'הבקשה מורכבת מדי. נסה לבקש פחות שדות.',
   DEFAULT: 'אירעה שגיאה. אנא נסה שוב.',
 };
 
@@ -156,6 +160,8 @@ export const MSG_EN = {
   [ERROR_CODES.FIELD_LIMIT_EXCEEDED]:        'Field concurrency limit exceeded. Please wait and try again.',
   [ERROR_CODES.COMPLEXITY_EXCEPTION]:        'Query too complex. Try requesting fewer fields.',
   [ERROR_CODES.INVALID_ITEM_ID]:             'Item ID is invalid or the item has been deleted.',
+  [ERROR_CODES.GRAPHQL_VALIDATION_FAILED]:   'GraphQL validation error. Check field names and query structure.',
+  [ERROR_CODES.REQUEST_MAX_COMPLEXITY_EXCEEDED]: 'Request too complex. Try requesting fewer fields.',
   DEFAULT: 'An error occurred. Please try again.',
 };
 
