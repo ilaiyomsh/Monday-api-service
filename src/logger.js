@@ -93,17 +93,25 @@ class Logger {
   }
 
   apiError(operation, error) {
-    const errors = error?.response?.errors || error?.errors || [];
-    const requestId = error?.response?.extensions?.request_id
+    const response = error?.response;
+    const errors = response?.errors || error?.errors || [];
+    const requestId = response?.extensions?.request_id
       || errors[0]?.extensions?.request_id || null;
+
+    // Extract top-level error fields (HTTP 429/401/403 responses without errors[])
+    const topLevelCode = response?.error_code || error?.error_code || null;
+    const topLevelMessage = response?.error_message || error?.error_message || null;
+
     this.error(`✖ API Error: ${operation}`, {
-      operation, requestId, message: error.message,
-      errors: errors.map(e => ({
-        code: e.extensions?.code, message: e.message,
-        statusCode: e.extensions?.status_code, path: e.path,
-      })),
-      // Full raw error response — unfiltered, for debugging & Supabase reports
-      rawResponse: error?.response ?? error,
+      operation, requestId, message: error?.message || topLevelMessage,
+      errors: errors.length > 0
+        ? errors.map(e => ({
+            code: e.extensions?.code, message: e.message,
+            statusCode: e.extensions?.status_code, path: e.path,
+          }))
+        : topLevelCode ? [{ code: topLevelCode, message: topLevelMessage }] : [],
+      // Full raw — safe-serialized to avoid circular refs and capture Error props
+      rawResponse: Logger.#safeSerialize(response ?? error),
     });
   }
 
@@ -182,7 +190,7 @@ class Logger {
       operation:    entry.data?.operation      || null,
       report_id:    reportId,
       user_note:    userNote || null,
-      data:         entry.data ? JSON.stringify(entry.data) : null,
+      data:         entry.data ? Logger.#safeStringify(entry.data) : null,
     }));
 
     try {
@@ -233,6 +241,53 @@ class Logger {
     }
 
     // NO auto-send to Supabase. Only sendErrorReport() does that.
+  }
+
+  // ── Safe Serialization ───────────────────────────────────────────────────
+
+  /**
+   * Serialize any value to a plain object safe for JSON.stringify.
+   * Handles: Error objects (non-enumerable props), circular refs, DOM nodes.
+   */
+  static #safeSerialize(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (obj instanceof Error) {
+      return {
+        name: obj.name,
+        message: obj.message,
+        stack: obj.stack,
+        // Capture any custom enumerable props (e.g. error.response, error.code)
+        ...Object.fromEntries(
+          Object.entries(obj).map(([k, v]) => [k, Logger.#safeSerialize(v)])
+        ),
+      };
+    }
+    if (typeof obj !== 'object') return obj;
+    // Avoid DOM nodes, streams, etc.
+    if (typeof obj.pipe === 'function' || typeof obj.nodeType === 'number') return '[Non-serializable]';
+    // Shallow clone arrays/objects, truncating depth to prevent infinite recursion
+    return obj;
+  }
+
+  /**
+   * JSON.stringify that never throws — catches circular refs.
+   */
+  static #safeStringify(data) {
+    try {
+      const seen = new WeakSet();
+      return JSON.stringify(data, (key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (value instanceof Error) {
+            return { name: value.name, message: value.message, stack: value.stack, ...value };
+          }
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+        }
+        return value;
+      });
+    } catch {
+      return JSON.stringify({ serializationError: true, message: String(data) });
+    }
   }
 }
 
