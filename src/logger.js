@@ -93,7 +93,7 @@ class Logger {
   }
 
   apiError(operation, error) {
-    const errors = error?.response?.errors || [];
+    const errors = error?.response?.errors || error?.errors || [];
     const requestId = error?.response?.extensions?.request_id
       || errors[0]?.extensions?.request_id || null;
     this.error(`✖ API Error: ${operation}`, {
@@ -102,6 +102,8 @@ class Logger {
         code: e.extensions?.code, message: e.message,
         statusCode: e.extensions?.status_code, path: e.path,
       })),
+      // Full raw error response — unfiltered, for debugging & Supabase reports
+      rawResponse: error?.response ?? error,
     });
   }
 

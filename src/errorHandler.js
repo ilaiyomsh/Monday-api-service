@@ -208,17 +208,12 @@ class ErrorHandler {
     const prevFails = this.#failureCount.get(failKey) || 0;
     this.#failureCount.set(failKey, prevFails + 1);
 
+    // Always log full error via apiError (level: error → goes to history & Supabase)
+    logger.apiError(operation, error);
+
     if (category === 'rate_limit') {
       logger.rateLimit(code, retryAfterMs ? retryAfterMs / 1000 : 0);
-    } else {
-      logger.apiError(operation, error);
     }
-
-    // Always log the full raw error object for debugging
-    logger.debug(`[RAW ERROR] ${operation}`, {
-      rawError: error?.response ?? error,
-      rawErrors: errors,
-    });
 
     return {
       category, code, httpStatus,
