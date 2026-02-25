@@ -1,0 +1,23 @@
+{
+  "name": "monday-app-services",
+  "version": "1.0.0",
+  "description": "Standardized service layer for monday.com client-side apps — API client, error handling, logging, and AI coding skill",
+  "main": "src/index.js",
+  "keywords": [
+    "monday",
+    "monday.com",
+    "monday-sdk",
+    "monday-api",
+    "graphql",
+    "service-layer",
+    "error-handling",
+    "claude-skill"
+  ],
+  "author": "Ilai",
+  "license": "MIT",
+  "peerDependencies": {
+    "monday-sdk-js": ">=0.5.7",
+    "@mondaydotcomorg/api": ">=13.0.0",
+    "react": ">=17.0.0"
+  }
+}
