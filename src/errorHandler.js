@@ -214,6 +214,12 @@ class ErrorHandler {
       logger.apiError(operation, error);
     }
 
+    // Always log the full raw error object for debugging
+    logger.debug(`[RAW ERROR] ${operation}`, {
+      rawError: error?.response ?? error,
+      rawErrors: errors,
+    });
+
     return {
       category, code, httpStatus,
       message: primary.message || error.message || 'Unknown error',
@@ -224,6 +230,8 @@ class ErrorHandler {
       consecutiveFailures: prevFails + 1,
       /** true if this is the 2nd+ failure → should show "send report" option. */
       showSendReport: prevFails + 1 >= 2,
+      /** Full raw error response — for debugging / reporting. */
+      raw: error?.response ?? error,
     };
   }
 

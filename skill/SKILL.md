@@ -653,23 +653,101 @@ const query = `query ($ids: [ID!]) {
 
 ## 10. Error Handling
 
-### Error Response Format (API version 2025-04+)
+### Full Raw Error Response Structure
 
-All errors return HTTP 200 with an `errors` array:
+The monday.com API returns errors in a standard GraphQL format. Below is the **complete** structure — every field that can appear in the response.
+
+**HTTP 200 errors** (most monday.com errors — the request succeeds but the operation fails):
 ```json
 {
   "data": null,
-  "errors": [{
-    "message": "User unauthorized to perform action",
-    "locations": [{ "line": 2, "column": 3 }],
-    "path": ["me"],
-    "extensions": {
-      "code": "USER_UNAUTHORIZED",
-      "error_data": {},
-      "status_code": 403
+  "errors": [
+    {
+      "message": "User unauthorized to perform action",
+      "locations": [{ "line": 2, "column": 3 }],
+      "path": ["me"],
+      "extensions": {
+        "code": "USER_UNAUTHORIZED",
+        "status_code": 403,
+        "error_data": {},
+        "request_id": "abc123-def456-ghi789"
+      }
     }
-  }]
+  ],
+  "extensions": {
+    "request_id": "abc123-def456-ghi789",
+    "warnings": [
+      {
+        "message": "Field 'items' is deprecated ...",
+        "extensions": { "code": "deprecatedField" }
+      }
+    ]
+  }
 }
+```
+
+**HTTP 429 errors** (rate limit / complexity):
+```json
+{
+  "error_code": "COMPLEXITY_BUDGET_EXHAUSTED",
+  "error_message": "Complexity budget exhausted ...",
+  "extensions": {
+    "code": "COMPLEXITY_BUDGET_EXHAUSTED",
+    "retry_in_seconds": 15
+  }
+}
+```
+
+**HTTP 401/403 errors** (auth — returned as standard HTTP, not GraphQL):
+```json
+{
+  "error_code": "Unauthorized",
+  "status_code": 401,
+  "error_message": "Not Authenticated"
+}
+```
+
+### Error Object Fields Reference
+
+| Field | Type | Always present? | Description |
+|---|---|---|---|
+| `errors` | `Array` | ✅ (on GraphQL errors) | Array of error objects |
+| `errors[].message` | `string` | ✅ | Human-readable error description |
+| `errors[].locations` | `Array<{line, column}>` | Usually | Where in the query the error occurred |
+| `errors[].path` | `Array<string>` | Usually | GraphQL field path that caused the error |
+| `errors[].extensions` | `object` | ✅ | Machine-readable metadata |
+| `errors[].extensions.code` | `string` | ✅ | The error code — use this for classification |
+| `errors[].extensions.status_code` | `number` | Usually | HTTP-equivalent status (403, 429, 500...) |
+| `errors[].extensions.error_data` | `object` | Sometimes | Extra context (e.g. `column_type`, `column_id`) |
+| `errors[].extensions.request_id` | `string` | Sometimes | Unique request identifier for support |
+| `errors[].extensions.retry_in_seconds` | `number` | On rate limits | Seconds to wait before retry |
+| `data` | `object\|null` | ✅ | Query results — can be partial even with errors |
+| `extensions` | `object` | Sometimes | Top-level metadata |
+| `extensions.request_id` | `string` | Sometimes | Same request ID, at the top level |
+| `extensions.warnings` | `Array` | Sometimes | Deprecation warnings (with `code: "deprecatedField"`) |
+| `error_code` | `string` | On HTTP 4xx/5xx | Error code on non-GraphQL HTTP errors |
+| `error_message` | `string` | On HTTP 4xx/5xx | Error message on non-GraphQL HTTP errors |
+
+### Accessing the Raw Error in Code
+
+`errorHandler.handle()` returns a `raw` field containing the full unprocessed error:
+
+```js
+const result = errorHandler.handle(error, { operation: 'myOp' });
+
+// Classified fields
+console.log(result.code);         // e.g. "USER_UNAUTHORIZED"
+console.log(result.category);     // "auth" | "rate_limit" | "validation" | "server" | "network" | "unknown"
+console.log(result.userMessage);  // Localized message for the user
+
+// Full raw error — everything the API returned, unfiltered
+console.log(result.raw);
+console.log(JSON.stringify(result.raw, null, 2));
+```
+
+> **TIP:** In `debug` log level, the error handler automatically prints the full raw error to the console. Set `logger.setLevel('debug')` during development.
+
+### Common Error Codes (API version 2026-01)
 ```
 
 ### Common Error Codes (API version 2026-01)
