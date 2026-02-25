@@ -40,7 +40,7 @@ export const ERROR_CODES = {
   JSON_PARSE_EXCEPTION:       'JsonParseException',
   UNAUTHORIZED:               'Unauthorized',
   IP_RESTRICTED:              'IpRestricted',
-  USER_UNAUTHORIZED:          'UserUnauthorizedException',
+  USER_UNAUTHORIZED:          'USER_UNAUTHORIZED',
   USER_ACCESS_DENIED:         'USER_ACCESS_DENIED',
   DELETE_LAST_GROUP:          'DeleteLastGroupException',
   RECORD_INVALID:             'RecordInvalidException',
@@ -52,13 +52,18 @@ export const ERROR_CODES = {
   DAILY_LIMIT_EXCEEDED:       'DAILY_LIMIT_EXCEEDED',
   // 5xx
   INTERNAL_SERVER_ERROR:      'InternalServerError',
+  // Additional codes (API 2026-01)
+  FIELD_LIMIT_EXCEEDED:       'FIELD_LIMIT_EXCEEDED',
+  COMPLEXITY_EXCEPTION:       'ComplexityException',
+  INVALID_ITEM_ID:            'InvalidItemIdException',
 };
 
 const RETRYABLE = new Set([
   ERROR_CODES.COMPLEXITY_BUDGET_EXHAUSTED, ERROR_CODES.RATE_LIMIT_EXCEEDED,
   ERROR_CODES.MAX_CONCURRENCY_EXCEEDED, ERROR_CODES.IP_RATE_LIMIT_EXCEEDED,
   ERROR_CODES.INTERNAL_SERVER_ERROR, ERROR_CODES.API_TEMPORARILY_BLOCKED,
-  ERROR_CODES.RESOURCE_LOCKED,
+  ERROR_CODES.RESOURCE_LOCKED, ERROR_CODES.FIELD_LIMIT_EXCEEDED,
+  ERROR_CODES.COMPLEXITY_EXCEPTION,
 ]);
 
 const AUTH_ERRORS = new Set([
@@ -75,6 +80,7 @@ const VALIDATION_ERRORS = new Set([
   ERROR_CODES.RESOURCE_NOT_FOUND, ERROR_CODES.CREATE_BOARD_EXCEPTION,
   ERROR_CODES.DELETE_LAST_GROUP, ERROR_CODES.RECORD_INVALID,
   ERROR_CODES.BAD_REQUEST, ERROR_CODES.JSON_PARSE_EXCEPTION,
+  ERROR_CODES.INVALID_ITEM_ID,
 ]);
 
 // ── User Messages ───────────────────────────────────────────────────────────
@@ -110,6 +116,9 @@ export const MSG_HE = {
   [ERROR_CODES.INTERNAL_SERVER_ERROR]:       'שגיאת שרת. אנא נסה שוב.',
   [ERROR_CODES.API_TEMPORARILY_BLOCKED]:     'ה-API זמנית לא זמין.',
   [ERROR_CODES.ASSET_UNAVAILABLE]:           'הקובץ אינו זמין.',
+  [ERROR_CODES.FIELD_LIMIT_EXCEEDED]:        'חריגה ממגבלת בקשות מקבילות. אנא המתן ונסה שוב.',
+  [ERROR_CODES.COMPLEXITY_EXCEPTION]:        'הבקשה מורכבת מדי. נסה לצמצם את כמות השדות.',
+  [ERROR_CODES.INVALID_ITEM_ID]:             'מזהה הפריט לא תקין או שהפריט נמחק.',
   DEFAULT: 'אירעה שגיאה. אנא נסה שוב.',
 };
 
@@ -144,6 +153,9 @@ export const MSG_EN = {
   [ERROR_CODES.INTERNAL_SERVER_ERROR]:       'Server error. Please try again.',
   [ERROR_CODES.API_TEMPORARILY_BLOCKED]:     'API is temporarily unavailable.',
   [ERROR_CODES.ASSET_UNAVAILABLE]:           'File is unavailable.',
+  [ERROR_CODES.FIELD_LIMIT_EXCEEDED]:        'Field concurrency limit exceeded. Please wait and try again.',
+  [ERROR_CODES.COMPLEXITY_EXCEPTION]:        'Query too complex. Try requesting fewer fields.',
+  [ERROR_CODES.INVALID_ITEM_ID]:             'Item ID is invalid or the item has been deleted.',
   DEFAULT: 'An error occurred. Please try again.',
 };
 
@@ -256,7 +268,12 @@ class ErrorHandler {
   }
 
   #extractCode(primary, original) {
-    if (primary?.extensions?.code) return primary.extensions.code;
+    if (primary?.extensions?.code) {
+      const code = primary.extensions.code;
+      // Legacy fallback: older API versions may still return the old name
+      if (code === 'UserUnauthorizedException') return ERROR_CODES.USER_UNAUTHORIZED;
+      return code;
+    }
     const msg = primary?.message || original?.message || '';
     if (msg.startsWith('Parse error'))              return ERROR_CODES.PARSE_ERROR;
     if (msg.includes('Complexity budget exhausted'))return ERROR_CODES.COMPLEXITY_BUDGET_EXHAUSTED;

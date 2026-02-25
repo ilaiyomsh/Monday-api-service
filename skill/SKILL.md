@@ -10,6 +10,7 @@ Use this as your single source of truth — do NOT guess column value formats.
 
 ## Table of Contents
 
+0. [Consulting the Official Documentation](#0-consulting-the-official-documentation)
 1. [Setup & SDK](#1-setup--sdk)
 2. [API Versioning](#2-api-versioning)
 3. [GraphQL Basics](#3-graphql-basics)
@@ -24,6 +25,35 @@ Use this as your single source of truth — do NOT guess column value formats.
 12. [Using the Service Layer](#12-using-the-service-layer)
 13. [Common Pitfalls](#13-common-pitfalls)
 14. [Quick Recipe Index](#14-quick-recipe-index)
+
+---
+
+## 0. Consulting the Official Documentation
+
+Before writing any monday.com API code, **always verify** column value formats, error codes, and query structure against the official documentation. Do NOT guess — the API is strict about formats.
+
+### Key Reference URLs
+
+| Resource | URL |
+|---|---|
+| GraphQL Schema (SDL) | `https://api.monday.com/v2/get_schema?format=sdl&version=2026-01` |
+| Column Types Reference | `https://developer.monday.com/api-reference/reference/column-types-reference` |
+| Individual Column Type | `https://developer.monday.com/api-reference/reference/{type}` (e.g., `/status`, `/date`, `/people`, `/dropdown`, `/checkbox`) |
+| Error Codes | `https://developer.monday.com/api-reference/docs/errors` |
+| Error Handling | `https://developer.monday.com/api-reference/docs/error-handling` |
+| Rate Limits | `https://developer.monday.com/api-reference/docs/rate-limits` |
+| API Versioning | `https://developer.monday.com/api-reference/docs/api-versioning` |
+| Changing Column Values | `https://developer.monday.com/api-reference/docs/change-column-values` |
+| API Changelog | `https://developer.monday.com/api-reference/changelog` |
+
+### When to Consult the Docs
+
+- **Unfamiliar column type** — fetch `https://developer.monday.com/api-reference/reference/{type}` before guessing the JSON format
+- **Error you haven't seen** — check the error codes page for the exact `extensions.code` value and whether it's retryable
+- **New API version** — check the changelog for breaking changes
+- **Complex query** — fetch the SDL schema to verify field names and argument types
+
+> **Rule:** If you encounter an unfamiliar column type or unclear format, ALWAYS fetch the relevant page above before guessing.
 
 ---
 
@@ -347,9 +377,11 @@ Every column type has a specific JSON format. Getting this wrong is the #1 cause
 
 #### Checkbox
 ```js
+// To check
 { checked: "true" }
-// To uncheck
-{ checked: "false" }
+// To uncheck — IMPORTANT: { checked: "false" } does NOT work (it still checks the box!)
+// Send null to uncheck:
+null
 ```
 
 #### Rating
@@ -632,29 +664,31 @@ All errors return HTTP 200 with an `errors` array:
     "locations": [{ "line": 2, "column": 3 }],
     "path": ["me"],
     "extensions": {
-      "code": "UserUnauthorizedException",
+      "code": "USER_UNAUTHORIZED",
       "error_data": {},
       "status_code": 403
     }
-  }],
-  "account_id": 123456
+  }]
 }
 ```
 
-### Common Error Codes
+### Common Error Codes (API version 2026-01)
 | Code | Meaning | Retryable? |
 |---|---|---|
 | `COMPLEXITY_BUDGET_EXHAUSTED` | Too many complex queries | ✅ wait `retry_in_seconds` |
 | `RATE_LIMIT_EXCEEDED` | Too many requests per minute | ✅ wait `Retry-After` header |
-| `UserUnauthorizedException` | No permission | ❌ |
+| `FIELD_LIMIT_EXCEEDED` | Field-level concurrency limit (e.g. subitems) | ✅ wait `retry_in_seconds` |
+| `ComplexityException` | Query exceeds max allowed complexity | ✅ simplify & retry |
+| `USER_UNAUTHORIZED` | No permission | ❌ |
 | `InvalidUserIdException` | Bad user ID | ❌ |
 | `InvalidColumnIdException` | Column doesn't exist | ❌ |
 | `InvalidItemIdException` | Item doesn't exist | ❌ |
 | `ColumnValueException` | Wrong column value format | ❌ fix format |
 | `CreateBoardException` | Board creation failed | ❌ |
 | `ItemsLimitationException` | Board item limit reached | ❌ |
-| `ConcurrencyLimitExceededException` | Too many concurrent requests | ✅ backoff |
-| `InternalServerException` | Monday server error | ✅ retry |
+| `maxConcurrencyExceeded` | Too many concurrent requests | ✅ backoff |
+| `InternalServerError` | Monday server error | ✅ retry |
+| `DAILY_LIMIT_EXCEEDED` | Daily request limit reached | ❌ wait until next day |
 
 ### Partial Data
 
@@ -711,7 +745,7 @@ If the project includes our `monday-services` package, use it instead of raw API
 
 ### Initialization
 ```js
-import { mondayApi } from './services';
+import { mondayApi } from 'monday-app-services';
 
 await mondayApi.init({
   language: 'he',  // 'he' or 'en' for error messages
@@ -761,7 +795,7 @@ mondayApi.onContextChange(callback);
 
 ### Error Flow in Components
 ```jsx
-import { mondayApi, ErrorBanner, useErrorHandler } from './services';
+import { mondayApi, ErrorBanner, useErrorHandler } from 'monday-app-services';
 
 function MyComponent() {
   const { error, handleError, clearError, retry } = useErrorHandler();
@@ -832,8 +866,12 @@ column_values: JSON.stringify({ status: { label: "Done" } })
 ```js
 // ❌ WRONG — boolean
 { checked: true }
-// ✅ CORRECT — string
+// ❌ WRONG — "false" does NOT uncheck! It still checks the box
+{ checked: "false" }
+// ✅ CORRECT — check
 { checked: "true" }
+// ✅ CORRECT — uncheck (send null)
+null
 ```
 
 ### ❌ Pitfall 6: Forgetting JSON.stringify in variables
@@ -920,7 +958,7 @@ while (cursor) { /* fetch next page */ }
 |---|---|---|---|
 | Auto Number | `auto_number` | ❌ | — |
 | Button | `button` | ❌ | — |
-| Checkbox | `checkbox` | ✅ | `{ checked: "true" }` |
+| Checkbox | `checkbox` | ✅ | `{ checked: "true" }` to check, `null` to uncheck |
 | Color Picker | `color_picker` | ✅ | `{ color: "#HEX" }` |
 | Connect Boards | `board_relation` | ✅ | `{ linkedPulseIds: [{linkedPulseId: ID}] }` |
 | Country | `country` | ✅ | `{ countryCode: "XX", countryName: "..." }` |
