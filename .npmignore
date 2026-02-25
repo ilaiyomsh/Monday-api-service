@@ -1,0 +1,5 @@
+docs/
+.github/
+*.zip
+setup.sh
+supabase-setup.sql

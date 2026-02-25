@@ -23,22 +23,16 @@ monday-app-services/
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
-npm install monday-sdk-js @mondaydotcomorg/api
+npm install monday-app-services monday-sdk-js @mondaydotcomorg/api
 ```
 
-### 2. Copy `src/` Into Your Project
-
-```bash
-cp -r src/ your-app/src/services/monday/
-```
-
-### 3. Initialize
+### 2. Initialize
 
 ```js
-import { mondayApi } from './services/monday';
+import { mondayApi } from 'monday-app-services';
 
 await mondayApi.init({
   language: 'he',  // 'he' or 'en'
@@ -49,7 +43,7 @@ await mondayApi.init({
 });
 ```
 
-### 4. Use
+### 3. Use
 
 ```js
 // Get board structure
@@ -75,10 +69,10 @@ await mondayApi.updateMultipleColumnValues(boardId, itemId, {
 const allItems = await mondayApi.getAllItems(boardId);
 ```
 
-### 5. Error UX (React)
+### 4. Error UX (React)
 
 ```jsx
-import { mondayApi, ErrorBanner, useErrorHandler } from './services/monday';
+import { mondayApi, ErrorBanner, useErrorHandler } from 'monday-app-services';
 
 function MyComponent() {
   const { error, handleError, clearError, retry } = useErrorHandler();
@@ -174,7 +168,7 @@ A comprehensive reference file for **Claude Code** (or any LLM coding assistant)
 
 **Claude Code:**
 ```bash
-cp -r skill/ ~/.claude/skills/monday-api/
+cp -r node_modules/monday-app-services/skill/ ~/.claude/skills/monday-api/
 ```
 
 **Or add to your project's `.claude/skills/` directory.**

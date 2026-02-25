@@ -2,7 +2,22 @@
   "name": "monday-app-services",
   "version": "1.0.0",
   "description": "Standardized service layer for monday.com client-side apps — API client, error handling, logging, and AI coding skill",
+  "type": "module",
   "main": "src/index.js",
+  "module": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./mondayApi": "./src/mondayApi.js",
+    "./errorHandler": "./src/errorHandler.js",
+    "./logger": "./src/logger.js",
+    "./ErrorBanner": "./src/ErrorBanner.jsx"
+  },
+  "files": [
+    "src",
+    "skill",
+    "LICENSE",
+    "README.md"
+  ],
   "keywords": [
     "monday",
     "monday.com",
@@ -15,9 +30,14 @@
   ],
   "author": "Ilai",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ilaiyomsh/Monday-api-service-.git"
+  },
   "peerDependencies": {
     "monday-sdk-js": ">=0.5.7",
     "@mondaydotcomorg/api": ">=13.0.0",
     "react": ">=17.0.0"
-  }
+  },
+  "sideEffects": false
 }
