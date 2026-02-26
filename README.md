@@ -113,12 +113,23 @@ function MyComponent() {
 
 **Error flow (hybrid privacy model):**
 1. API call fails → auto-retry with backoff
-2. Retries exhausted → **auto-report** (anonymized) sent to Supabase `error_events` table (no PII)
+2. Retries exhausted → **auto-report** sent to Supabase `error_events` table — all technical details, **no PII**
 3. ErrorBanner shows "Something went wrong" + retry button + "Error details sent automatically"
 4. Second failure → + "Send additional details" button
-5. User clicks send → **full report** to `error_logs` with PII, linked by fingerprint
+5. User clicks send → **full report** to `error_logs` with PII (user name, email, account, board URL), linked by fingerprint
 
-The auto-report contains only: fingerprint, error_code, operation, app_version, environment, breadcrumbs (API ops only). No userId, accountId, boardId, or raw error details.
+**What gets auto-reported (no user approval needed):**
+
+| Field | Auto-report (`error_events`) | User report (`error_logs`) |
+|-------|:---:|:---:|
+| fingerprint, error_code, operation | Yes | Yes |
+| message, level, request_id | Yes | Yes |
+| data (full error payload, raw response) | Yes | Yes |
+| breadcrumbs (full API operations) | Yes | Yes |
+| app_id, app_version, environment | Yes | Yes |
+| user_name, user_email, account_id | **No** | Yes |
+| board_url, board_id, instance_id | **No** | Yes |
+| user_note | **No** | Yes |
 
 ## Service Layer Overview
 
@@ -156,7 +167,7 @@ All methods auto-retry on rate limits, and errors bubble up to components for th
 - Per-operation failure counter for progressive disclosure
 - `withRetry(fn, opts)` — exponential backoff + jitter, respects `Retry-After`
 - **Error fingerprinting** — stable hash of `operation + code + normalized message` for dedup and grouping
-- **Auto-report** — sends anonymized error events to Supabase when retries are exhausted (session dedup, configurable cap)
+- **Auto-report** — sends full technical error details (message, request_id, raw response, breadcrumbs) to Supabase when retries are exhausted — no PII (session dedup, configurable cap)
 - Hebrew + English user-facing messages
 - `TIMEOUT` error code for SDK timeout errors
 
@@ -170,7 +181,7 @@ All methods auto-retry on rate limits, and errors bubble up to components for th
   - `logger.getBreadcrumbs()` / `logger.getAnonymizedBreadcrumbs()`
 - `alwaysLogErrors` option (default `true`) — error-level messages always print to console even when log level is higher
 - `sendErrorReport()` — user-triggered full report with breadcrumbs and fingerprint
-- `sendAnonymousEvent()` — auto-triggered anonymous event (no PII)
+- `sendAnonymousEvent()` — auto-triggered event with full technical details (message, request_id, data, breadcrumbs) but no PII
 - **Context enrichment** — appVersion, environment, sessionId, userAgent
 
 ### `ErrorBanner.jsx`
@@ -217,16 +228,37 @@ cat supabase-setup.sql
 ```
 
 **Fresh install** — `supabase-setup.sql` creates:
-- `error_events` table (anonymous auto-reports, no PII)
-- `error_logs` table (user-triggered reports with full context)
-- Aggregation views: `error_issues`, `error_trend_hourly`, `error_by_account`
-- RLS: anyone can INSERT (anon key), only your UUID can SELECT
+- `error_events` table — auto-reports with full technical details (message, request_id, data, breadcrumbs), no PII
+- `error_logs` table — user-triggered reports with PII (user name, email, account, board URL)
+- `insert_error_event` RPC — rate-limited, validated insert (max 1000/hour)
+- Aggregation views: `error_issues`, `error_trend_hourly`, `error_trend_daily`, `error_by_account`, `error_by_app`
+- RLS: anon can INSERT (via RPC), authenticated can SELECT (for error dashboard)
 - Immutable logs (no UPDATE/DELETE)
 
 **Existing install** — `supabase-migration.sql` adds:
-- New `error_events` table
-- New columns to `error_logs`: `fingerprint`, `app_version`, `environment`, `breadcrumbs`, `report_type`
-- All aggregation views
+- New `error_events` table with `app_id`, `message`, `level`, `request_id`, `data` columns
+- New columns to `error_logs`: `fingerprint`, `app_version`, `environment`, `breadcrumbs`, `report_type`, `user_name`, `user_email`, `board_url`
+- Updated `insert_error_event` RPC with all new fields
+- RLS policies for `authenticated` role on both tables
+- All aggregation views: `error_issues` (with `app_id`), `error_trend_hourly`, `error_trend_daily`, `error_by_account`, `error_by_app`
+- GRANT SELECT on all views to `authenticated`
+
+### Supabase Tables
+
+| Table | Purpose | PII | Insert method |
+|-------|---------|-----|---------------|
+| `error_events` | Auto-reported errors (all technical details) | No | RPC `insert_error_event` (anon) |
+| `error_logs` | User-triggered detailed reports | Yes | Direct INSERT (anon) |
+
+### Supabase Views
+
+| View | Description |
+|------|-------------|
+| `error_issues` | Errors grouped by fingerprint (like Sentry issues) with `app_id` |
+| `error_trend_hourly` | Hourly error count (last 7 days) |
+| `error_trend_daily` | Daily error count by app (last 30 days) |
+| `error_by_account` | Per-account error summary (last 30 days) |
+| `error_by_app` | Per-app error summary (last 30 days) |
 
 ## API Version
 

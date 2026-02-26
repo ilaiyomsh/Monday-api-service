@@ -432,6 +432,15 @@ class ErrorHandler {
         fingerprint: result.fingerprint,
         error_code: result.code,
         operation: result.operation,
+        message: result.message,
+        level: 'error',
+        request_id: result.requestId,
+        data: {
+          category: result.category,
+          httpStatus: result.httpStatus,
+          errors: result.errors,
+          raw: result.raw,
+        },
       });
       this.#reportedFingerprints.add(result.fingerprint);
       this.#autoReportCount++;

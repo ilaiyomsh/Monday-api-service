@@ -17,30 +17,35 @@ CREATE TABLE IF NOT EXISTS error_events (
   error_code  TEXT,                  -- e.g. 'ColumnValueException'
   operation   TEXT,                  -- e.g. 'createItem'
 
+  -- Error details (no PII — full technical info auto-reported)
+  message     TEXT,                  -- Error message
+  level       TEXT DEFAULT 'error',  -- Log level
+  request_id  TEXT,                  -- Monday API request_id (for Monday support)
+  data        JSONB,                 -- Full error payload (errors array, raw response, etc.)
+
   -- Context (no PII)
+  app_id      TEXT,                  -- e.g. 'team-dynamic'
   app_version TEXT,                  -- e.g. '1.2.3'
   environment TEXT DEFAULT 'production',
 
   -- Debugging context
-  breadcrumbs JSONB                  -- Last N API operations (no user data)
+  breadcrumbs JSONB                  -- Last N API operations (full breadcrumbs, no user data)
 );
 
 CREATE INDEX IF NOT EXISTS idx_error_events_fingerprint  ON error_events (fingerprint);
 CREATE INDEX IF NOT EXISTS idx_error_events_timestamp    ON error_events (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_error_events_error_code   ON error_events (error_code);
 CREATE INDEX IF NOT EXISTS idx_error_events_environment  ON error_events (environment);
+CREATE INDEX IF NOT EXISTS idx_error_events_app_id       ON error_events (app_id);
 
 ALTER TABLE error_events ENABLE ROW LEVEL SECURITY;
 
 -- NO direct INSERT for anon — all inserts go through the RPC function below
 -- This prevents abuse: the function validates payload and rate-limits.
 
--- SELECT: no policy for anon/authenticated = nobody can read via REST API.
--- You read error_events via the Supabase Dashboard or service_role key.
--- If you want a specific user to read via REST, uncomment and set your UUID:
--- CREATE POLICY "Only admin can read error events"
---   ON error_events FOR SELECT TO authenticated
---   USING (auth.uid() = 'your-actual-uuid-here');
+-- Authenticated users can read error events (for error dashboard)
+CREATE POLICY "Authenticated can read error events"
+  ON error_events FOR SELECT TO authenticated USING (true);
 
 -- ============================================================================
 -- RPC FUNCTION: insert_error_event (rate-limited, validated)
@@ -80,11 +85,16 @@ BEGIN
     RAISE EXCEPTION 'operation too long';
   END IF;
 
-  INSERT INTO error_events (fingerprint, error_code, operation, app_version, environment, breadcrumbs)
+  INSERT INTO error_events (fingerprint, error_code, operation, message, level, request_id, data, app_id, app_version, environment, breadcrumbs)
   VALUES (
     fp,
     left(payload->>'error_code', 200),
     left(payload->>'operation', 200),
+    left(payload->>'message', 1000),
+    left(COALESCE(payload->>'level', 'error'), 20),
+    left(payload->>'request_id', 200),
+    (payload->'data')::jsonb,
+    left(payload->>'app_id', 100),
     left(payload->>'app_version', 50),
     left(payload->>'environment', 50),
     (payload->'breadcrumbs')::jsonb
@@ -110,8 +120,11 @@ CREATE TABLE IF NOT EXISTS error_logs (
 
   -- Monday.com context (PII — only in user-triggered reports)
   user_id     TEXT,
+  user_name   TEXT,
+  user_email  TEXT,
   account_id  TEXT,
   board_id    TEXT,
+  board_url   TEXT,
   instance_id TEXT,
   app_id      TEXT,
 
@@ -150,12 +163,9 @@ CREATE POLICY "Anyone can insert error logs"
   ON error_logs FOR INSERT TO anon
   WITH CHECK (true);
 
--- SELECT: no policy for anon/authenticated = nobody can read via REST API.
--- You read error_logs via the Supabase Dashboard or service_role key.
--- If you want a specific user to read via REST, uncomment and set your UUID:
--- CREATE POLICY "Only admin can read error logs"
---   ON error_logs FOR SELECT TO authenticated
---   USING (auth.uid() = 'your-actual-uuid-here');
+-- Authenticated users can read error logs (for error dashboard)
+CREATE POLICY "Authenticated can read error logs"
+  ON error_logs FOR SELECT TO authenticated USING (true);
 
 -- No UPDATE/DELETE policies = nobody can modify or delete logs
 
@@ -170,13 +180,14 @@ SELECT
   e.fingerprint,
   e.error_code,
   e.operation,
+  e.app_id,
   COUNT(*) AS total_occurrences,
   MAX(e.timestamp) AS last_seen,
   MIN(e.timestamp) AS first_seen,
   MAX(e.app_version) AS latest_version,
   (SELECT COUNT(*) FROM error_logs l WHERE l.fingerprint = e.fingerprint) AS detailed_reports
 FROM error_events e
-GROUP BY e.fingerprint, e.error_code, e.operation
+GROUP BY e.fingerprint, e.error_code, e.operation, e.app_id
 ORDER BY total_occurrences DESC;
 
 -- Hourly error trend (last 7 days)
@@ -204,6 +215,45 @@ WHERE timestamp > NOW() - INTERVAL '30 days'
   AND account_id IS NOT NULL
 GROUP BY account_id
 ORDER BY total_reports DESC;
+
+-- Per-app error summary (last 30 days)
+CREATE OR REPLACE VIEW error_by_app AS
+WITH combined AS (
+  SELECT app_id, fingerprint, error_code, timestamp FROM error_events WHERE app_id IS NOT NULL
+  UNION ALL
+  SELECT app_id, fingerprint, error_code, timestamp FROM error_logs WHERE app_id IS NOT NULL
+)
+SELECT
+  app_id,
+  COUNT(*) AS total_events,
+  COUNT(DISTINCT fingerprint) AS unique_errors,
+  MAX(timestamp) AS last_error,
+  MIN(timestamp) AS first_error,
+  array_agg(DISTINCT error_code) FILTER (WHERE error_code IS NOT NULL) AS error_codes
+FROM combined
+WHERE timestamp > NOW() - INTERVAL '30 days'
+GROUP BY app_id
+ORDER BY total_events DESC;
+
+-- Daily error trend (last 30 days)
+CREATE OR REPLACE VIEW error_trend_daily AS
+SELECT
+  date_trunc('day', timestamp) AS day,
+  error_code,
+  environment,
+  app_id,
+  COUNT(*) AS count
+FROM error_events
+WHERE timestamp > NOW() - INTERVAL '30 days'
+GROUP BY day, error_code, environment, app_id
+ORDER BY day DESC;
+
+-- Grant SELECT on all views to authenticated role (for error dashboard)
+GRANT SELECT ON error_issues TO authenticated;
+GRANT SELECT ON error_trend_hourly TO authenticated;
+GRANT SELECT ON error_trend_daily TO authenticated;
+GRANT SELECT ON error_by_account TO authenticated;
+GRANT SELECT ON error_by_app TO authenticated;
 
 -- ============================================================================
 -- USEFUL QUERIES

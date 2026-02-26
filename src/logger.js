@@ -327,8 +327,11 @@ class Logger {
       level:        entry.level,
       message:      entry.message,
       user_id:      this.#context.userId      || null,
+      user_name:    this.#context.userName     || null,
+      user_email:   this.#context.userEmail    || null,
       account_id:   this.#context.accountId   || null,
       board_id:     this.#context.boardId     || null,
+      board_url:    this.#context.boardUrl     || null,
       instance_id:  this.#context.instanceId  || null,
       app_id:       this.#context.appId       || null,
       request_id:   entry.data?.requestId     || null,
@@ -371,12 +374,18 @@ class Logger {
 
   /**
    * Send an anonymous error event to Supabase (auto-reported, no PII).
-   * Used for automatic error reporting when retries are exhausted.
+   * Includes full technical details (message, request_id, raw data, breadcrumbs)
+   * but NO personally-identifiable information (user name, email, account, board URL).
+   * PII is only sent via sendErrorReport() when the user explicitly approves.
    *
    * @param {object} eventData
    * @param {string} eventData.fingerprint — Error fingerprint for grouping
    * @param {string} [eventData.error_code] — Error code (e.g. 'ColumnValueException')
    * @param {string} [eventData.operation] — Operation name (e.g. 'createItem')
+   * @param {string} [eventData.message] — Error message
+   * @param {string} [eventData.level] — Log level (e.g. 'error')
+   * @param {string} [eventData.request_id] — Monday API request_id
+   * @param {object} [eventData.data] — Full error payload (raw response, errors array, etc.)
    * @returns {Promise<{ success: boolean }>}
    */
   async sendAnonymousEvent(eventData) {
@@ -388,9 +397,14 @@ class Logger {
       fingerprint:  eventData.fingerprint,
       error_code:   eventData.error_code || null,
       operation:    eventData.operation || null,
+      message:      eventData.message || null,
+      level:        eventData.level || 'error',
+      request_id:   eventData.request_id || null,
+      data:         eventData.data ? Logger.#safeSerialize(eventData.data) : null,
+      app_id:       this.#context.appId || null,
       app_version:  this.#context.appVersion || null,
       environment:  this.#context.environment || null,
-      breadcrumbs:  this.getAnonymizedBreadcrumbs(),
+      breadcrumbs:  this.getBreadcrumbs(),
     };
 
     try {
