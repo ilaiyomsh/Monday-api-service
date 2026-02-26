@@ -1,9 +1,105 @@
 -- ============================================================================
--- Supabase Setup — Monday.com App Error Reporting
+-- Supabase Setup — Monday.com App Error Reporting (Fresh Install)
 -- Run this in your Supabase SQL Editor (one time)
 -- ============================================================================
 
--- 1. Create error_logs table
+-- ============================================================================
+-- TABLE 1: error_events (anonymous, auto-reported — NO PII)
+-- Receives automatic error reports when retries are exhausted.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS error_events (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  -- Error identity
+  fingerprint TEXT NOT NULL,         -- Hash of operation + code + normalized message
+  error_code  TEXT,                  -- e.g. 'ColumnValueException'
+  operation   TEXT,                  -- e.g. 'createItem'
+
+  -- Context (no PII)
+  app_version TEXT,                  -- e.g. '1.2.3'
+  environment TEXT DEFAULT 'production',
+
+  -- Debugging context
+  breadcrumbs JSONB                  -- Last N API operations (no user data)
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_events_fingerprint  ON error_events (fingerprint);
+CREATE INDEX IF NOT EXISTS idx_error_events_timestamp    ON error_events (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_error_events_error_code   ON error_events (error_code);
+CREATE INDEX IF NOT EXISTS idx_error_events_environment  ON error_events (environment);
+
+ALTER TABLE error_events ENABLE ROW LEVEL SECURITY;
+
+-- NO direct INSERT for anon — all inserts go through the RPC function below
+-- This prevents abuse: the function validates payload and rate-limits.
+
+-- SELECT: no policy for anon/authenticated = nobody can read via REST API.
+-- You read error_events via the Supabase Dashboard or service_role key.
+-- If you want a specific user to read via REST, uncomment and set your UUID:
+-- CREATE POLICY "Only admin can read error events"
+--   ON error_events FOR SELECT TO authenticated
+--   USING (auth.uid() = 'your-actual-uuid-here');
+
+-- ============================================================================
+-- RPC FUNCTION: insert_error_event (rate-limited, validated)
+-- Client calls this via POST /rest/v1/rpc/insert_error_event
+-- Prevents flooding: max 1000 events/hour, validates fingerprint format.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION insert_error_event(payload jsonb)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER  -- runs as table owner, bypasses RLS
+AS $$
+DECLARE
+  recent_count int;
+  fp text;
+BEGIN
+  -- Extract and validate fingerprint
+  fp := payload->>'fingerprint';
+  IF fp IS NULL OR fp !~ '^fp-[a-z0-9]+$' THEN
+    RAISE EXCEPTION 'Invalid fingerprint format';
+  END IF;
+
+  -- Rate limit: max 1000 events per hour (across all clients)
+  SELECT COUNT(*) INTO recent_count
+  FROM error_events
+  WHERE timestamp > NOW() - INTERVAL '1 hour';
+
+  IF recent_count >= 1000 THEN
+    RAISE EXCEPTION 'Rate limit exceeded';
+  END IF;
+
+  -- Validate field lengths to prevent oversized payloads
+  IF length(COALESCE(payload->>'error_code', '')) > 200 THEN
+    RAISE EXCEPTION 'error_code too long';
+  END IF;
+  IF length(COALESCE(payload->>'operation', '')) > 200 THEN
+    RAISE EXCEPTION 'operation too long';
+  END IF;
+
+  INSERT INTO error_events (fingerprint, error_code, operation, app_version, environment, breadcrumbs)
+  VALUES (
+    fp,
+    left(payload->>'error_code', 200),
+    left(payload->>'operation', 200),
+    left(payload->>'app_version', 50),
+    left(payload->>'environment', 50),
+    (payload->'breadcrumbs')::jsonb
+  );
+END;
+$$;
+
+-- Allow anon to call the RPC function
+GRANT EXECUTE ON FUNCTION insert_error_event(jsonb) TO anon;
+
+-- ============================================================================
+-- TABLE 2: error_logs (user-triggered reports — has PII)
+-- Receives detailed reports when user clicks "Send problem details".
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS error_logs (
   id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -12,7 +108,7 @@ CREATE TABLE IF NOT EXISTS error_logs (
   level       TEXT NOT NULL,
   message     TEXT NOT NULL,
 
-  -- Monday.com context
+  -- Monday.com context (PII — only in user-triggered reports)
   user_id     TEXT,
   account_id  TEXT,
   board_id    TEXT,
@@ -24,52 +120,110 @@ CREATE TABLE IF NOT EXISTS error_logs (
   error_code  TEXT,          -- e.g. 'ColumnValueException'
   operation   TEXT,          -- e.g. 'createItem'
 
-  -- Report grouping (all rows from one "Send problem details" click share a report_id)
+  -- Report grouping
   report_id   TEXT,
-  user_note   TEXT,          -- What the user / operation context was
+  user_note   TEXT,
+
+  -- Fingerprint (links to error_events for joining)
+  fingerprint TEXT,
+  app_version TEXT,
+  environment TEXT,
+  breadcrumbs JSONB,
+  report_type TEXT DEFAULT 'user',  -- 'user' or 'auto'
 
   -- Full payload
   data        JSONB
 );
 
--- 2. Indexes
+-- Indexes
 CREATE INDEX IF NOT EXISTS idx_error_logs_timestamp  ON error_logs (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_error_logs_account    ON error_logs (account_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_error_logs_report     ON error_logs (report_id);
 CREATE INDEX IF NOT EXISTS idx_error_logs_code       ON error_logs (error_code);
 CREATE INDEX IF NOT EXISTS idx_error_logs_request_id ON error_logs (request_id);
+CREATE INDEX IF NOT EXISTS idx_error_logs_fingerprint ON error_logs (fingerprint);
 
--- 3. Enable Row Level Security
 ALTER TABLE error_logs ENABLE ROW LEVEL SECURITY;
 
--- 4. ANYONE can INSERT (client-side apps use the anon key)
+-- ANYONE can INSERT (client-side apps use the anon key)
 CREATE POLICY "Anyone can insert error logs"
   ON error_logs FOR INSERT TO anon
   WITH CHECK (true);
 
--- 5. ONLY YOU can SELECT
--- Replace the UUID below with your Supabase user UUID.
--- Find it: Supabase dashboard → Authentication → Users → copy your ID
-CREATE POLICY "Only admin can read error logs"
-  ON error_logs FOR SELECT TO authenticated
-  USING (auth.uid() = 'PUT-YOUR-SUPABASE-USER-UUID-HERE');
+-- SELECT: no policy for anon/authenticated = nobody can read via REST API.
+-- You read error_logs via the Supabase Dashboard or service_role key.
+-- If you want a specific user to read via REST, uncomment and set your UUID:
+-- CREATE POLICY "Only admin can read error logs"
+--   ON error_logs FOR SELECT TO authenticated
+--   USING (auth.uid() = 'your-actual-uuid-here');
 
 -- No UPDATE/DELETE policies = nobody can modify or delete logs
+
+-- ============================================================================
+-- VIEWS — Aggregation and Trend Analysis
+-- ============================================================================
+
+-- "Issues" view: errors grouped by fingerprint (like Sentry's Issues page)
+-- Joins anonymous events with user-triggered reports
+CREATE OR REPLACE VIEW error_issues AS
+SELECT
+  e.fingerprint,
+  e.error_code,
+  e.operation,
+  COUNT(*) AS total_occurrences,
+  MAX(e.timestamp) AS last_seen,
+  MIN(e.timestamp) AS first_seen,
+  MAX(e.app_version) AS latest_version,
+  (SELECT COUNT(*) FROM error_logs l WHERE l.fingerprint = e.fingerprint) AS detailed_reports
+FROM error_events e
+GROUP BY e.fingerprint, e.error_code, e.operation
+ORDER BY total_occurrences DESC;
+
+-- Hourly error trend (last 7 days)
+CREATE OR REPLACE VIEW error_trend_hourly AS
+SELECT
+  date_trunc('hour', timestamp) AS hour,
+  error_code,
+  environment,
+  COUNT(*) AS count
+FROM error_events
+WHERE timestamp > NOW() - INTERVAL '7 days'
+GROUP BY hour, error_code, environment
+ORDER BY hour DESC;
+
+-- Per-account error summary (from user-triggered reports only — has account_id)
+CREATE OR REPLACE VIEW error_by_account AS
+SELECT
+  account_id,
+  COUNT(*) AS total_reports,
+  COUNT(DISTINCT fingerprint) AS unique_errors,
+  MAX(timestamp) AS last_error,
+  array_agg(DISTINCT error_code) FILTER (WHERE error_code IS NOT NULL) AS error_codes
+FROM error_logs
+WHERE timestamp > NOW() - INTERVAL '30 days'
+  AND account_id IS NOT NULL
+GROUP BY account_id
+ORDER BY total_reports DESC;
 
 -- ============================================================================
 -- USEFUL QUERIES
 -- ============================================================================
 
--- All reports in the last 24 hours, grouped
--- SELECT report_id, MIN(timestamp) as reported_at, account_id, user_id,
---        array_agg(DISTINCT error_code) as error_codes, COUNT(*) as entries
--- FROM error_logs
--- WHERE timestamp > NOW() - INTERVAL '24 hours' AND report_id IS NOT NULL
--- GROUP BY report_id, account_id, user_id
--- ORDER BY reported_at DESC;
+-- Top errors this week
+-- SELECT * FROM error_issues WHERE last_seen > NOW() - INTERVAL '7 days' LIMIT 20;
+
+-- Hourly trend for a specific error
+-- SELECT * FROM error_trend_hourly WHERE error_code = 'ColumnValueException';
+
+-- All reports for an account
+-- SELECT * FROM error_by_account WHERE account_id = 'your-account-id';
+
+-- Join anonymous event to user reports by fingerprint
+-- SELECT e.fingerprint, e.error_code, e.operation, COUNT(e.*) as auto_count,
+--        COUNT(l.*) as user_reports
+-- FROM error_events e
+-- LEFT JOIN error_logs l ON l.fingerprint = e.fingerprint
+-- GROUP BY e.fingerprint, e.error_code, e.operation;
 
 -- Drill into a specific report
 -- SELECT * FROM error_logs WHERE report_id = 'some-report-id' ORDER BY timestamp;
-
--- Most common errors across all accounts
--- SELECT error_code, COUNT(*) FROM error_logs GROUP BY error_code ORDER BY count DESC;

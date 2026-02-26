@@ -58,6 +58,9 @@ export function useErrorHandler(options = {}) {
 
     setError({
       ...result,
+      // Carry auto-report status from withRetry (marked on the error object)
+      autoReported: err._autoReported || result.autoReported || false,
+      fingerprint: err._fingerprint || result.fingerprint,
       language,
     });
   }, [language]);
@@ -109,18 +112,20 @@ export function ErrorBanner({ error, onRetry, onDismiss }) {
     title: 'משהו השתבש',
     subtitle: error.userMessage,
     retry: 'נסה שוב',
-    sendReport: 'שלח פרטי תקלה',
+    sendReport: error.autoReported ? 'שלח פרטים נוספים' : 'שלח פרטי תקלה',
     sending: 'שולח...',
     sent: 'נשלח בהצלחה! תודה.',
     sentSubtitle: 'צוות הפיתוח יבדוק את הבעיה.',
+    autoReported: 'פרטי התקלה נשלחו אוטומטית',
   } : {
     title: 'Something went wrong',
     subtitle: error.userMessage,
     retry: 'Try again',
-    sendReport: 'Send problem details',
+    sendReport: error.autoReported ? 'Send additional details' : 'Send problem details',
     sending: 'Sending...',
     sent: 'Sent successfully! Thank you.',
     sentSubtitle: 'The development team will look into it.',
+    autoReported: 'Error details sent automatically',
   };
 
   const handleSendReport = async () => {
@@ -129,6 +134,7 @@ export function ErrorBanner({ error, onRetry, onDismiss }) {
       const result = await logger.sendErrorReport({
         maxEntries: 20,
         userNote: `Operation: ${error.operation}, Code: ${error.code}`,
+        fingerprint: error.fingerprint || null,
       });
       if (result.success) {
         setSent(true);
@@ -183,13 +189,20 @@ export function ErrorBanner({ error, onRetry, onDismiss }) {
         </button>
       </div>
 
+      {/* Auto-reported info text */}
+      {error.autoReported && (
+        <div style={styles.autoReportedText}>
+          {texts.autoReported}
+        </div>
+      )}
+
       <div style={styles.actions}>
         {/* Always show retry */}
         <button onClick={onRetry} style={styles.retryBtn}>
           {texts.retry}
         </button>
 
-        {/* Show "Send report" only on 2nd+ failure */}
+        {/* Show "Send report" / "Send additional details" on 2nd+ failure */}
         {error.showSendReport && logger.isSupabaseReady && (
           <button
             onClick={handleSendReport}
@@ -259,6 +272,14 @@ const styles = {
     padding: '0 4px',
     flexShrink: 0,
     lineHeight: '1',
+  },
+  autoReportedText: {
+    fontSize: '12px',
+    color: '#676879',
+    marginTop: '6px',
+    paddingRight: '30px',
+    paddingLeft: '30px',
+    fontStyle: 'italic',
   },
   actions: {
     display: 'flex',

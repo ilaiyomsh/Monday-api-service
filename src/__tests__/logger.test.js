@@ -132,6 +132,51 @@ describe('Logger', () => {
       expect(entry.data.rawResponse.message).toBe('something broke');
       expect(entry.data.rawResponse.name).toBe('Error');
     });
+
+    it('deep-clones error response (snapshot, not reference)', () => {
+      const error = {
+        message: 'Bad value',
+        response: {
+          errors: [{
+            message: 'Bad value',
+            extensions: { code: 'ColumnValueException', error_data: { column_type: 'status' } },
+          }],
+          extensions: { request_id: 'req-deep' },
+        },
+      };
+      logger.apiError('test', error);
+
+      // Mutate the original error object after capture
+      error.response.errors[0].extensions.code = 'MUTATED';
+      error.response.extensions.request_id = 'MUTATED';
+
+      // The captured rawResponse should be a snapshot, unaffected by mutation
+      const entry = logger.getErrorHistory(1)[0];
+      expect(entry.data.rawResponse.errors[0].extensions.code).toBe('ColumnValueException');
+      expect(entry.data.rawResponse.extensions.request_id).toBe('req-deep');
+      // Deep nested data should also be cloned
+      expect(entry.data.rawResponse.errors[0].extensions.error_data.column_type).toBe('status');
+    });
+
+    it('deep-clones nested arrays in error response', () => {
+      const error = {
+        message: 'Multiple errors',
+        response: {
+          errors: [
+            { message: 'err1', extensions: { code: 'A' } },
+            { message: 'err2', extensions: { code: 'B' } },
+          ],
+        },
+      };
+      logger.apiError('test', error);
+
+      // Mutate original
+      error.response.errors.push({ message: 'err3' });
+
+      const entry = logger.getErrorHistory(1)[0];
+      // rawResponse should have exactly 2 errors (snapshot before push)
+      expect(entry.data.rawResponse.errors).toHaveLength(2);
+    });
   });
 
   // ── sendErrorReport (Supabase) ─────────────────────────────────────────
@@ -268,6 +313,217 @@ describe('Logger', () => {
       await logger.sendErrorReport();
 
       expect(capturedUrl).toContain('/rest/v1/my_errors');
+
+      vi.unstubAllGlobals();
+    });
+
+    it('includes fingerprint and report_type in rows', async () => {
+      let capturedBody;
+      const mockFetch = vi.fn(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true };
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      logger.initSupabase('https://test.supabase.co', 'test-key');
+      logger.error('test error');
+
+      await logger.sendErrorReport({ fingerprint: 'fp-abc123' });
+
+      const row = capturedBody[0];
+      expect(row.fingerprint).toBe('fp-abc123');
+      expect(row.report_type).toBe('user');
+
+      vi.unstubAllGlobals();
+    });
+
+    it('includes breadcrumbs in report data', async () => {
+      let capturedBody;
+      const mockFetch = vi.fn(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true };
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      logger.initSupabase('https://test.supabase.co', 'test-key');
+      logger.addBreadcrumb('api', '→ getItems', { variables: {} });
+      logger.addBreadcrumb('api', '← getItems (50ms)', { durationMs: 50 });
+      logger.error('test error');
+
+      await logger.sendErrorReport();
+
+      const row = capturedBody[0];
+      expect(row.breadcrumbs).toBeDefined();
+      const crumbs = JSON.parse(row.breadcrumbs);
+      expect(crumbs).toHaveLength(2);
+      expect(crumbs[0].category).toBe('api');
+
+      vi.unstubAllGlobals();
+    });
+  });
+
+  // ── Breadcrumbs ──────────────────────────────────────────────────────────
+
+  describe('breadcrumbs', () => {
+    it('stores breadcrumbs via addBreadcrumb', () => {
+      logger.addBreadcrumb('ui', 'Clicked save', { itemId: '123' });
+      logger.addBreadcrumb('navigation', 'Switched tab');
+
+      const crumbs = logger.getBreadcrumbs();
+      expect(crumbs).toHaveLength(2);
+      expect(crumbs[0].category).toBe('ui');
+      expect(crumbs[0].message).toBe('Clicked save');
+      expect(crumbs[0].data).toEqual({ itemId: '123' });
+      expect(crumbs[1].category).toBe('navigation');
+    });
+
+    it('respects maxBreadcrumbs limit', () => {
+      const small = createLogger({ level: 'silent', maxBreadcrumbs: 3 });
+      small.addBreadcrumb('a', 'one');
+      small.addBreadcrumb('b', 'two');
+      small.addBreadcrumb('c', 'three');
+      small.addBreadcrumb('d', 'four');
+
+      const crumbs = small.getBreadcrumbs();
+      expect(crumbs).toHaveLength(3);
+      expect(crumbs[0].message).toBe('two'); // oldest evicted
+      expect(crumbs[2].message).toBe('four');
+    });
+
+    it('getBreadcrumbs returns a copy (not a reference)', () => {
+      logger.addBreadcrumb('test', 'item');
+      const crumbs1 = logger.getBreadcrumbs();
+      const crumbs2 = logger.getBreadcrumbs();
+      expect(crumbs1).not.toBe(crumbs2);
+      expect(crumbs1).toEqual(crumbs2);
+    });
+
+    it('clearBreadcrumbs empties the buffer', () => {
+      logger.addBreadcrumb('test', 'item');
+      logger.clearBreadcrumbs();
+      expect(logger.getBreadcrumbs()).toHaveLength(0);
+    });
+
+    it('auto-captures breadcrumbs on apiRequest', () => {
+      logger.apiRequest('getItems', { boardId: '123' });
+      const crumbs = logger.getBreadcrumbs();
+      expect(crumbs).toHaveLength(1);
+      expect(crumbs[0].category).toBe('api');
+      expect(crumbs[0].message).toContain('getItems');
+    });
+
+    it('auto-captures breadcrumbs on apiResponse', () => {
+      logger.apiResponse('getItems', { data: {} }, 150);
+      const crumbs = logger.getBreadcrumbs();
+      expect(crumbs).toHaveLength(1);
+      expect(crumbs[0].category).toBe('api');
+      expect(crumbs[0].message).toContain('150ms');
+      expect(crumbs[0].data.durationMs).toBe(150);
+    });
+
+    it('auto-captures breadcrumbs on apiError', () => {
+      const error = {
+        message: 'Bad value',
+        response: {
+          errors: [{
+            message: 'Bad value',
+            extensions: { code: 'ColumnValueException' },
+          }],
+        },
+      };
+      logger.apiError('createItem', error);
+      const crumbs = logger.getBreadcrumbs();
+      expect(crumbs).toHaveLength(1);
+      expect(crumbs[0].category).toBe('api.error');
+      expect(crumbs[0].message).toContain('createItem');
+      expect(crumbs[0].level).toBe('error');
+    });
+
+    it('getAnonymizedBreadcrumbs filters to API-only and strips variables', () => {
+      logger.addBreadcrumb('ui', 'Clicked button', { userId: 'u1' });
+      logger.addBreadcrumb('api', '→ getItems', { variables: { boardId: '123' } });
+      logger.addBreadcrumb('api', '← getItems (50ms)', { durationMs: 50, hasErrors: false });
+      logger.addBreadcrumb('api.error', '✖ createItem', { code: 'ColumnValueException' });
+      logger.addBreadcrumb('navigation', 'Switched tab');
+
+      const anon = logger.getAnonymizedBreadcrumbs();
+      // Only api/api.error breadcrumbs (not ui or navigation)
+      expect(anon).toHaveLength(3);
+      // No variables in data
+      expect(anon[0].data).toEqual({ durationMs: undefined, hasErrors: undefined, code: undefined });
+      expect(anon[1].data).toEqual({ durationMs: 50, hasErrors: false, code: undefined });
+      expect(anon[2].data).toEqual({ durationMs: undefined, hasErrors: undefined, code: 'ColumnValueException' });
+    });
+  });
+
+  // ── sendAnonymousEvent ──────────────────────────────────────────────────
+
+  describe('sendAnonymousEvent', () => {
+    it('returns { success: false } when Supabase not configured', async () => {
+      const result = await logger.sendAnonymousEvent({ fingerprint: 'fp-123' });
+      expect(result.success).toBe(false);
+    });
+
+    it('sends to RPC endpoint with correct structure', async () => {
+      let capturedUrl, capturedBody;
+      const mockFetch = vi.fn(async (url, opts) => {
+        capturedUrl = url;
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true };
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      logger.initSupabase('https://test.supabase.co', 'test-key');
+      logger.setContext({ appVersion: '1.2.3', environment: 'production' });
+
+      const result = await logger.sendAnonymousEvent({
+        fingerprint: 'fp-abc',
+        error_code: 'ColumnValueException',
+        operation: 'createItem',
+      });
+
+      expect(result.success).toBe(true);
+      // Uses RPC function, not direct table REST
+      expect(capturedUrl).toBe('https://test.supabase.co/rest/v1/rpc/insert_error_event');
+
+      const payload = capturedBody.payload;
+      expect(payload.fingerprint).toBe('fp-abc');
+      expect(payload.error_code).toBe('ColumnValueException');
+      expect(payload.operation).toBe('createItem');
+      expect(payload.app_version).toBe('1.2.3');
+      expect(payload.environment).toBe('production');
+      expect(payload.breadcrumbs).toBeDefined();
+
+      // Verify NO PII fields
+      expect(payload.user_id).toBeUndefined();
+      expect(payload.account_id).toBeUndefined();
+      expect(payload.board_id).toBeUndefined();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('includes anonymized breadcrumbs (API only, no variables)', async () => {
+      let capturedBody;
+      const mockFetch = vi.fn(async (url, opts) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true };
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      logger.initSupabase('https://test.supabase.co', 'test-key');
+
+      // Add various breadcrumbs
+      logger.addBreadcrumb('ui', 'Clicked button', { userId: 'secret' });
+      logger.addBreadcrumb('api', '→ getItems', { variables: { boardId: '123' } });
+      logger.addBreadcrumb('api.error', '✖ createItem', { code: 'ERR' });
+
+      await logger.sendAnonymousEvent({ fingerprint: 'fp-test' });
+
+      const crumbs = capturedBody.payload.breadcrumbs;
+      // Only api/api.error (not ui)
+      expect(crumbs).toHaveLength(2);
+      // No variables in the data
+      expect(crumbs[0].data.variables).toBeUndefined();
 
       vi.unstubAllGlobals();
     });

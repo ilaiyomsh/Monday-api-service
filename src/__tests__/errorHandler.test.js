@@ -5,7 +5,7 @@
  * and verifies the full flow: handle() → logger history → sendErrorReport().
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createErrorHandler, ERROR_CODES, MSG_HE, MSG_EN } from '../errorHandler.js';
 import { createLogger } from '../logger.js';
 
@@ -277,6 +277,208 @@ describe('ErrorHandler', () => {
 
       const r = handler.handle(err, { operation: 'loadItems' });
       expect(r.consecutiveFailures).toBe(1);
+    });
+  });
+
+  // ── Fingerprinting ──────────────────────────────────────────────────────
+
+  describe('fingerprinting', () => {
+    it('returns a fingerprint in handle() result', () => {
+      const result = handler.handle(makeGraphQLError('ColumnValueException', 'Bad value'));
+      expect(result.fingerprint).toBeDefined();
+      expect(result.fingerprint).toMatch(/^fp-/);
+    });
+
+    it('produces stable fingerprints (same input → same output)', () => {
+      const r1 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Bad value'),
+        { operation: 'createItem' }
+      );
+      const r2 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Bad value'),
+        { operation: 'createItem' }
+      );
+      expect(r1.fingerprint).toBe(r2.fingerprint);
+    });
+
+    it('produces different fingerprints for different operations', () => {
+      const r1 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Bad value'),
+        { operation: 'createItem' }
+      );
+      const r2 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Bad value'),
+        { operation: 'updateItem' }
+      );
+      expect(r1.fingerprint).not.toBe(r2.fingerprint);
+    });
+
+    it('produces different fingerprints for different error codes', () => {
+      const r1 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Error'),
+        { operation: 'createItem' }
+      );
+      const r2 = handler.handle(
+        makeGraphQLError('InvalidArgumentException', 'Error'),
+        { operation: 'createItem' }
+      );
+      expect(r1.fingerprint).not.toBe(r2.fingerprint);
+    });
+
+    it('normalizes long numbers in messages (IDs)', () => {
+      const r1 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Item 123456789 not found'),
+        { operation: 'test' }
+      );
+      const r2 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Item 987654321 not found'),
+        { operation: 'test' }
+      );
+      // Both should normalize to 'Item {id} not found' → same fingerprint
+      expect(r1.fingerprint).toBe(r2.fingerprint);
+    });
+
+    it('normalizes long quoted strings', () => {
+      const r1 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Invalid value "this is a very long string value one"'),
+        { operation: 'test' }
+      );
+      const r2 = handler.handle(
+        makeGraphQLError('ColumnValueException', 'Invalid value "this is a very long string value two"'),
+        { operation: 'test' }
+      );
+      expect(r1.fingerprint).toBe(r2.fingerprint);
+    });
+  });
+
+  // ── Auto-Report ─────────────────────────────────────────────────────────
+
+  describe('auto-report', () => {
+    it('handle() includes autoReported=false by default', () => {
+      const result = handler.handle(makeGraphQLError('ColumnValueException', 'Bad'));
+      expect(result.autoReported).toBe(false);
+    });
+
+    it('withRetry marks error with _autoReported when auto-report is enabled', async () => {
+      const mockFetch = vi.fn(async () => ({ ok: true }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const autoHandler = createErrorHandler({
+        baseRetryMs: 1,
+        maxRetries: 0,
+        autoReport: { enabled: true, maxPerSession: 10 },
+      });
+
+      // Need Supabase configured on the logger for auto-report to fire
+      const { createLogger } = await import('../logger.js');
+      const testLogger = createLogger({ level: 'silent' });
+      testLogger.initSupabase('https://test.supabase.co', 'key');
+      // The errorHandler uses the singleton logger, so we need to configure it
+      const { logger: singletonLogger } = await import('../logger.js');
+      singletonLogger.initSupabase('https://test.supabase.co', 'key');
+
+      let caughtError;
+      try {
+        await autoHandler.withRetry(
+          async () => { throw makeGraphQLError('ColumnValueException', 'Bad'); },
+          { operation: 'test' }
+        );
+      } catch (e) {
+        caughtError = e;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError._autoReported).toBe(true);
+      expect(caughtError._fingerprint).toMatch(/^fp-/);
+
+      vi.unstubAllGlobals();
+    });
+
+    it('does not auto-report when autoReport.enabled is false', async () => {
+      const mockFetch = vi.fn(async () => ({ ok: true }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const noAutoHandler = createErrorHandler({
+        baseRetryMs: 1,
+        maxRetries: 0,
+        autoReport: { enabled: false },
+      });
+
+      let caughtError;
+      try {
+        await noAutoHandler.withRetry(
+          async () => { throw makeGraphQLError('ColumnValueException', 'Bad'); },
+          { operation: 'test' }
+        );
+      } catch (e) {
+        caughtError = e;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError._autoReported).toBeUndefined();
+
+      vi.unstubAllGlobals();
+    });
+
+    it('deduplicates auto-reports by fingerprint within session', async () => {
+      const mockFetch = vi.fn(async () => ({ ok: true }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const { logger: singletonLogger } = await import('../logger.js');
+      singletonLogger.initSupabase('https://test.supabase.co', 'key');
+
+      const dedupHandler = createErrorHandler({
+        baseRetryMs: 1,
+        maxRetries: 0,
+        autoReport: { enabled: true, maxPerSession: 10 },
+      });
+
+      // Same error twice
+      const err = makeGraphQLError('ColumnValueException', 'Bad value');
+      for (let i = 0; i < 2; i++) {
+        try {
+          await dedupHandler.withRetry(async () => { throw err; }, { operation: 'test' });
+        } catch { /* expected */ }
+      }
+
+      // sendAnonymousEvent should only have been called once (dedup)
+      const anonymousCalls = mockFetch.mock.calls.filter(
+        c => c[0].includes('/rpc/insert_error_event')
+      );
+      expect(anonymousCalls).toHaveLength(1);
+
+      vi.unstubAllGlobals();
+    });
+
+    it('respects maxPerSession cap', async () => {
+      const mockFetch = vi.fn(async () => ({ ok: true }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const { logger: singletonLogger } = await import('../logger.js');
+      singletonLogger.initSupabase('https://test.supabase.co', 'key');
+
+      const cappedHandler = createErrorHandler({
+        baseRetryMs: 1,
+        maxRetries: 0,
+        autoReport: { enabled: true, maxPerSession: 2 },
+      });
+
+      // 3 different errors → should only auto-report 2
+      for (let i = 0; i < 3; i++) {
+        try {
+          await cappedHandler.withRetry(
+            async () => { throw makeGraphQLError('ColumnValueException', `Error ${i}`); },
+            { operation: `op${i}` }
+          );
+        } catch { /* expected */ }
+      }
+
+      const anonymousCalls = mockFetch.mock.calls.filter(
+        c => c[0].includes('/rpc/insert_error_event')
+      );
+      expect(anonymousCalls).toHaveLength(2);
+
+      vi.unstubAllGlobals();
     });
   });
 });
